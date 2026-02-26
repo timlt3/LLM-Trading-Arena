@@ -2,24 +2,22 @@
 
 **Can an LLM beat classic trading strategies?**
 
-A live paper trading competition pitting **Llama 70B** against baseline strategies on FX markets.
-
-![Arena Screenshot](screenshot.png)
+A live paper trading competition pitting **Llama 70B** against baseline strategies on US equities.
 
 ## 🏆 The Competitors
 
-| Strategy | Description |
-|----------|-------------|
-| **Llama 70B** | Meta's large language model analyzing price action + news to make trading decisions |
-| **Buy & Hold** | Simple baseline - buy once and hold |
-| **Random** | Coin flip decisions (sanity check) |
-| **Mean Reversion** | Classic quant strategy - buy below SMA, sell above |
+| Strategy | Trades | Description |
+|----------|--------|-------------|
+| **Llama 70B** | AAPL, MSFT, GOOGL, AMZN, NVDA... | AI stock picker - analyzes price action + news to select individual stocks |
+| **Buy & Hold SPY** | SPY | The Boglehead benchmark - buy the index, hold forever |
+| **Mean Reversion** | SPY | RSI-based - buy when oversold (<30), sell when overbought (>70) |
+| **Trend Following** | SPY | SMA crossover - long when SMA(10) > SMA(50) |
 
 ## 🛠️ Tech Stack
 
-- **LLM Inference**: vLLM on AMD MI300X (192GB VRAM)
-- **Broker**: Interactive Brokers paper trading
-- **Data**: Yahoo Finance (prices) + NewsAPI (headlines)
+- **LLM Inference**: Llama 3.1 70B on AMD MI300X via vLLM
+- **Broker**: Interactive Brokers paper trading API
+- **Data**: Yahoo Finance (prices), yfinance news
 - **UI**: Gradio leaderboard
 
 ## 🚀 Quick Start
@@ -27,8 +25,8 @@ A live paper trading competition pitting **Llama 70B** against baseline strategi
 ### Prerequisites
 
 1. **IBKR Account** with paper trading enabled
-2. **TWS or IB Gateway** running locally with API enabled
-3. **AMD GPU Droplet** (or any vLLM-compatible inference server)
+2. **TWS or IB Gateway** running locally with API enabled (port 7497)
+3. **AMD GPU Droplet** running vLLM with Llama 70B (or any OpenAI-compatible endpoint)
 
 ### Setup
 
@@ -37,18 +35,24 @@ A live paper trading competition pitting **Llama 70B** against baseline strategi
 git clone https://github.com/yourusername/llm-trading-arena
 cd llm-trading-arena
 
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure (edit config.py)
-# - Set your droplet IP in LLM_BASE_URL
-# - Optionally add NEWS_API_KEY for headlines
+# Configure
+# Edit config.py - set your droplet IP in LLM_BASE_URL
+```
 
-# Start the arena
+### Run the Arena
+
+```bash
 python main.py
 ```
 
-### Run the Leaderboard UI
+### Run the Leaderboard UI (optional)
 
 ```bash
 python ui.py
@@ -57,26 +61,40 @@ python ui.py
 
 ## 📊 How It Works
 
-1. Every 15 minutes, each strategy receives market data:
-   - Current price
-   - 1-hour and 24-hour price history  
-   - Recent news headlines (if configured)
+Every 15 minutes during market hours:
 
-2. Each strategy decides: **BUY**, **SELL**, or **HOLD**
-
-3. Trades execute on IBKR paper trading
-
-4. P&L is tracked per strategy with attribution
+1. **Baseline strategies** (Buy & Hold, Mean Reversion, Trend Following) analyze SPY
+2. **Llama 70B** analyzes the top 5 stocks from a 20-stock universe
+3. Decisions are made: **BUY**, **SELL**, or **HOLD**
+4. Trades execute on IBKR paper trading
+5. P&L is tracked per strategy
 
 ## 🧠 The LLM Prompt
 
-Llama receives structured market data and must respond with JSON:
+Llama receives structured market data:
+
+```
+=== PRICE DATA ===
+Current Price: $185.42
+Recent Change (10 periods): +0.85%
+5-Day Change: +2.31%
+RSI(14): 58.3
+SMA(10): $183.20, SMA(50): $179.85 (bullish)
+
+=== YOUR POSITION ===
+Current holding: 50 shares ($9,271)
+
+=== Recent News ===
+• Apple announces new AI features for iPhone...
+```
+
+And responds with:
 
 ```json
 {
-    "action": "BUY",
-    "confidence": 0.75,
-    "reasoning": "EUR showing strength against USD following hawkish ECB commentary..."
+    "action": "HOLD",
+    "confidence": 0.7,
+    "reasoning": "Position is profitable, momentum remains positive, waiting for clearer signal"
 }
 ```
 
@@ -85,48 +103,51 @@ Llama receives structured market data and must respond with JSON:
 ```
 llm-trading-arena/
 ├── main.py              # Main trading loop
-├── config.py            # Configuration
+├── config.py            # Configuration (droplet IP, symbols, etc.)
 ├── broker.py            # IBKR integration
-├── data.py              # Market data fetching
-├── tracker.py           # P&L tracking
+├── data.py              # Price/news fetching + technical indicators
+├── tracker.py           # P&L tracking per strategy
 ├── ui.py                # Gradio leaderboard
+├── requirements.txt
 └── strategies/
     ├── base.py          # Strategy interface
-    ├── llm.py           # Llama 70B strategy
-    ├── buy_hold.py      # Buy & hold baseline
-    ├── random_strat.py  # Random baseline
-    └── mean_reversion.py # Mean reversion baseline
+    ├── llm.py           # Llama 70B stock picker
+    ├── buy_hold.py      # Buy & Hold SPY
+    ├── mean_reversion.py # RSI-based mean reversion
+    └── trend_following.py # SMA crossover
 ```
 
-## ⚠️ Disclaimer
-
-This is for educational/entertainment purposes only. Not financial advice. Paper trading only - no real money at risk.
-
-## 📈 Results
-
-*Results will be posted after 48-hour competition run*
-
-| Strategy | Final P&L | Win Rate | Total Trades |
-|----------|-----------|----------|--------------|
-| TBD | TBD | TBD | TBD |
-
-## 🔧 Configuration
+## ⚙️ Configuration
 
 Edit `config.py`:
 
 ```python
-# Your droplet IP
+# Your vLLM endpoint
 LLM_BASE_URL = "http://YOUR_DROPLET_IP:8000/v1"
+LLM_MODEL = "meta-llama/Llama-3.1-70B-Instruct"
 
-# Trading pairs to compete on
-TRADING_PAIRS = ["EUR/USD", "GBP/USD"]
+# IBKR
+IBKR_PORT = 7497  # Paper trading
 
-# Decision frequency (minutes)
+# Stock universe for Llama to pick from
+LLM_UNIVERSE = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", ...]
+
+# Trading parameters
 DECISION_INTERVAL_MINUTES = 15
-
-# Position size per trade
-POSITION_SIZE = 10000
+POSITION_SIZE_USD = 10000
 ```
+
+## 📈 Results
+
+*Results will be updated after running the competition*
+
+| Strategy | Total P&L | Trades | Win Rate |
+|----------|-----------|--------|----------|
+| TBD | TBD | TBD | TBD |
+
+## ⚠️ Disclaimer
+
+This is for educational and entertainment purposes only. Not financial advice. Paper trading only - no real money at risk.
 
 ## 📝 License
 
