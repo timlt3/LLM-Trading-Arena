@@ -11,9 +11,9 @@ from strategies.base import Action
 class Trade:
     timestamp: str
     strategy: str
-    pair: str
+    symbol: str
     action: str
-    size: float
+    quantity: int
     price: float
     pnl: Optional[float] = None  # Realized P&L when position closed
 
@@ -24,8 +24,8 @@ class Tracker:
     def __init__(self, data_file: str = "arena_data.json"):
         self.data_file = Path(data_file)
         self.trades: list[Trade] = []
-        self.positions: dict[str, dict[str, float]] = {}  # strategy -> pair -> size
-        self.entry_prices: dict[str, dict[str, float]] = {}  # strategy -> pair -> avg price
+        self.positions: dict[str, dict[str, int]] = {}  # strategy -> symbol -> shares
+        self.entry_prices: dict[str, dict[str, float]] = {}  # strategy -> symbol -> avg price
         self.realized_pnl: dict[str, float] = {}  # strategy -> total realized P&L
         self.load()
     
@@ -39,7 +39,7 @@ class Tracker:
                     self.positions = data.get("positions", {})
                     self.entry_prices = data.get("entry_prices", {})
                     self.realized_pnl = data.get("realized_pnl", {})
-                    print(f"Loaded {len(self.trades)} trades from {self.data_file}")
+                    print(f"📂 Loaded {len(self.trades)} trades from {self.data_file}")
             except Exception as e:
                 print(f"Error loading data: {e}")
     
@@ -58,9 +58,9 @@ class Tracker:
     def record_trade(
         self,
         strategy: str,
-        pair: str,
+        symbol: str,
         action: Action,
-        size: float,
+        quantity: int,
         price: float
     ):
         """Record a trade and update positions."""
@@ -71,50 +71,51 @@ class Tracker:
             self.entry_prices[strategy] = {}
             self.realized_pnl[strategy] = 0.0
         
-        if pair not in self.positions[strategy]:
-            self.positions[strategy][pair] = 0.0
-            self.entry_prices[strategy][pair] = 0.0
+        if symbol not in self.positions[strategy]:
+            self.positions[strategy][symbol] = 0
+            self.entry_prices[strategy][symbol] = 0.0
         
-        current_pos = self.positions[strategy][pair]
-        entry_price = self.entry_prices[strategy][pair]
+        current_pos = self.positions[strategy][symbol]
+        entry_price = self.entry_prices[strategy][symbol]
         
         # Calculate P&L if closing/reducing position
         pnl = None
         if action == Action.BUY and current_pos < 0:
             # Closing short
-            close_size = min(size, abs(current_pos))
-            pnl = close_size * (entry_price - price)
+            close_qty = min(quantity, abs(current_pos))
+            pnl = close_qty * (entry_price - price)
             self.realized_pnl[strategy] += pnl
         elif action == Action.SELL and current_pos > 0:
             # Closing long
-            close_size = min(size, current_pos)
-            pnl = close_size * (price - entry_price)
+            close_qty = min(quantity, current_pos)
+            pnl = close_qty * (price - entry_price)
             self.realized_pnl[strategy] += pnl
         
         # Update position
         if action == Action.BUY:
-            new_pos = current_pos + size
+            new_pos = current_pos + quantity
         else:  # SELL
-            new_pos = current_pos - size
+            new_pos = current_pos - quantity
         
-        # Update entry price (simple average for now)
-        if new_pos != 0 and current_pos * new_pos > 0:
-            # Same direction, average the entry
-            total_cost = abs(current_pos) * entry_price + size * price
-            self.entry_prices[strategy][pair] = total_cost / (abs(current_pos) + size)
-        elif new_pos != 0:
-            # New position direction
-            self.entry_prices[strategy][pair] = price
+        # Update entry price (weighted average for adding to position)
+        if new_pos != 0:
+            if current_pos * new_pos > 0 and current_pos != 0:
+                # Same direction, average the entry
+                total_cost = abs(current_pos) * entry_price + quantity * price
+                self.entry_prices[strategy][symbol] = total_cost / (abs(current_pos) + quantity)
+            else:
+                # New position or flipped direction
+                self.entry_prices[strategy][symbol] = price
         
-        self.positions[strategy][pair] = new_pos
+        self.positions[strategy][symbol] = new_pos
         
         # Record trade
         trade = Trade(
             timestamp=datetime.now().isoformat(),
             strategy=strategy,
-            pair=pair,
+            symbol=symbol,
             action=action.value,
-            size=size,
+            quantity=quantity,
             price=price,
             pnl=pnl
         )
@@ -129,10 +130,10 @@ class Tracker:
             return 0.0
         
         unrealized = 0.0
-        for pair, position in self.positions[strategy].items():
-            if position != 0 and pair in current_prices:
-                entry = self.entry_prices[strategy].get(pair, current_prices[pair])
-                current = current_prices[pair]
+        for symbol, position in self.positions[strategy].items():
+            if position != 0 and symbol in current_prices:
+                entry = self.entry_prices[strategy].get(symbol, current_prices[symbol])
+                current = current_prices[symbol]
                 if position > 0:  # Long
                     unrealized += position * (current - entry)
                 else:  # Short

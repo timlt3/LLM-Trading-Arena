@@ -1,58 +1,68 @@
 from strategies.base import BaseStrategy, MarketData, Decision, Action
+import config
 
 
 class MeanReversionStrategy(BaseStrategy):
-    """Mean reversion strategy - buy when below average, sell when above."""
+    """Mean reversion strategy using RSI on SPY."""
     
-    def __init__(self, lookback_periods: int = 20, threshold: float = 0.002):
+    def __init__(self, oversold: float = 30.0, overbought: float = 70.0):
         super().__init__("Mean Reversion")
-        self.lookback_periods = lookback_periods
-        self.threshold = threshold  # 0.2% deviation threshold
+        self.oversold = oversold
+        self.overbought = overbought
     
     def decide(self, market_data: MarketData) -> Decision:
-        prices = market_data.prices_24h
-        
-        if len(prices) < self.lookback_periods:
+        # Only trade SPY
+        if market_data.symbol != config.BENCHMARK_SYMBOL:
             return Decision(
                 action=Action.HOLD,
-                pair=market_data.pair,
+                symbol=market_data.symbol,
                 confidence=0.0,
-                reasoning="Not enough price history for mean reversion",
+                reasoning="Mean Reversion only trades SPY",
                 strategy_name=self.name
             )
         
-        # Calculate simple moving average
-        recent_prices = prices[-self.lookback_periods:]
-        sma = sum(recent_prices) / len(recent_prices)
-        current = market_data.current_price
+        rsi = market_data.rsi_14
         
-        # Calculate deviation from mean
-        deviation = (current - sma) / sma
-        
-        if deviation < -self.threshold:
-            # Price is below mean - expect reversion up, so buy
+        if rsi is None:
             return Decision(
-                action=Action.BUY,
-                pair=market_data.pair,
-                confidence=min(abs(deviation) / self.threshold * 0.5, 1.0),
-                reasoning=f"Price {deviation*100:.3f}% below SMA({self.lookback_periods}), expecting reversion up",
+                action=Action.HOLD,
+                symbol=market_data.symbol,
+                confidence=0.0,
+                reasoning="Not enough price history to calculate RSI",
                 strategy_name=self.name
             )
         
-        elif deviation > self.threshold:
-            # Price is above mean - expect reversion down, so sell
-            return Decision(
-                action=Action.SELL,
-                pair=market_data.pair,
-                confidence=min(abs(deviation) / self.threshold * 0.5, 1.0),
-                reasoning=f"Price {deviation*100:.3f}% above SMA({self.lookback_periods}), expecting reversion down",
-                strategy_name=self.name
-            )
+        current_position = self.get_position(market_data.symbol)
+        shares = int(config.POSITION_SIZE_USD / market_data.current_price)
+        
+        if rsi < self.oversold:
+            # Oversold - buy signal
+            if current_position <= 0:
+                return Decision(
+                    action=Action.BUY,
+                    symbol=market_data.symbol,
+                    confidence=min((self.oversold - rsi) / self.oversold, 1.0),
+                    reasoning=f"RSI({rsi:.1f}) below {self.oversold} - oversold, expecting bounce",
+                    strategy_name=self.name,
+                    quantity=shares
+                )
+        
+        elif rsi > self.overbought:
+            # Overbought - sell signal
+            if current_position > 0:
+                return Decision(
+                    action=Action.SELL,
+                    symbol=market_data.symbol,
+                    confidence=min((rsi - self.overbought) / (100 - self.overbought), 1.0),
+                    reasoning=f"RSI({rsi:.1f}) above {self.overbought} - overbought, expecting pullback",
+                    strategy_name=self.name,
+                    quantity=current_position  # Sell entire position
+                )
         
         return Decision(
             action=Action.HOLD,
-            pair=market_data.pair,
+            symbol=market_data.symbol,
             confidence=0.5,
-            reasoning=f"Price within {self.threshold*100:.1f}% of SMA, no clear signal",
+            reasoning=f"RSI({rsi:.1f}) in neutral zone ({self.oversold}-{self.overbought})",
             strategy_name=self.name
         )

@@ -7,7 +7,7 @@ import config
 
 
 class LlamaStrategy(BaseStrategy):
-    """Trading strategy powered by Llama 70B."""
+    """Trading strategy powered by Llama 70B - picks stocks from S&P 500 universe."""
     
     def __init__(self):
         super().__init__("Llama-70B")
@@ -15,6 +15,7 @@ class LlamaStrategy(BaseStrategy):
             base_url=config.LLM_BASE_URL,
             api_key="not-needed"
         )
+        self.portfolio_value = config.POSITION_SIZE_USD * 5  # Can hold up to 5 positions
     
     def decide(self, market_data: MarketData) -> Decision:
         prompt = self._build_prompt(market_data)
@@ -27,70 +28,93 @@ class LlamaStrategy(BaseStrategy):
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=500,
-                temperature=0.3  # Lower temp for more consistent decisions
+                temperature=0.3
             )
             
-            return self._parse_response(response.choices[0].message.content, market_data.pair)
+            return self._parse_response(response.choices[0].message.content, market_data)
         
         except Exception as e:
             print(f"LLM error: {e}")
             return Decision(
                 action=Action.HOLD,
-                pair=market_data.pair,
+                symbol=market_data.symbol,
                 confidence=0.0,
                 reasoning=f"Error calling LLM: {e}",
                 strategy_name=self.name
             )
     
     def _system_prompt(self) -> str:
-        return """You are an FX trading analyst. You analyze market data and news to make trading decisions.
+        return """You are an AI stock trader managing a portfolio. You analyze price data and news to make trading decisions on individual stocks.
 
 You must respond with valid JSON in this exact format:
 {
     "action": "BUY" | "SELL" | "HOLD",
     "confidence": 0.0 to 1.0,
-    "reasoning": "Brief explanation of your decision"
+    "reasoning": "Brief explanation of your decision (1-2 sentences)"
 }
 
-Be decisive. Consider:
-- Price momentum and recent trends
-- News sentiment and potential impact
-- Mean reversion opportunities
-- Risk management (don't overtrade)
+Consider:
+- Recent price momentum and trends
+- News sentiment and catalysts
+- Technical levels (RSI, moving averages)
+- Risk management - don't chase, cut losers
+- Your current position in this stock
 
-Respond ONLY with the JSON object, no other text."""
+Be decisive but prudent. Respond ONLY with the JSON object."""
 
     def _build_prompt(self, data: MarketData) -> str:
-        # Calculate some basic stats
-        prices_1h = data.prices_1h
-        prices_24h = data.prices_24h
+        # Calculate stats
+        prices = data.prices_5d if data.prices_5d else data.prices_1d
         
-        change_1h = ((prices_1h[-1] - prices_1h[0]) / prices_1h[0] * 100) if prices_1h else 0
-        change_24h = ((prices_24h[-1] - prices_24h[0]) / prices_24h[0] * 100) if prices_24h else 0
+        if len(prices) >= 2:
+            change_recent = ((prices[-1] - prices[-10]) / prices[-10] * 100) if len(prices) >= 10 else 0
+            change_5d = ((prices[-1] - prices[0]) / prices[0] * 100)
+        else:
+            change_recent = 0
+            change_5d = 0
         
-        high_24h = max(prices_24h) if prices_24h else data.current_price
-        low_24h = min(prices_24h) if prices_24h else data.current_price
+        high_5d = max(prices) if prices else data.current_price
+        low_5d = min(prices) if prices else data.current_price
         
+        # News section
         news_section = ""
         if data.news_headlines:
-            news_section = "\n\nRecent News Headlines:\n" + "\n".join(f"- {h}" for h in data.news_headlines[:5])
+            news_section = "\n\nRecent News:\n" + "\n".join(f"• {h}" for h in data.news_headlines[:5])
         
-        return f"""Analyze {data.pair} and decide whether to BUY, SELL, or HOLD.
+        # Current position
+        current_pos = self.get_position(data.symbol)
+        position_str = f"{current_pos} shares (${current_pos * data.current_price:,.0f})" if current_pos else "None"
+        
+        # Technical indicators
+        tech_section = ""
+        if data.rsi_14:
+            tech_section += f"\nRSI(14): {data.rsi_14:.1f}"
+        if data.sma_10 and data.sma_50:
+            tech_section += f"\nSMA(10): ${data.sma_10:.2f}, SMA(50): ${data.sma_50:.2f}"
+            if data.sma_10 > data.sma_50:
+                tech_section += " (bullish)"
+            else:
+                tech_section += " (bearish)"
+        
+        return f"""Analyze {data.symbol} and decide whether to BUY, SELL, or HOLD.
 
-Current Price: {data.current_price:.5f}
-1-Hour Change: {change_1h:+.3f}%
-24-Hour Change: {change_24h:+.3f}%
-24h High: {high_24h:.5f}
-24h Low: {low_24h:.5f}
+=== PRICE DATA ===
+Current Price: ${data.current_price:.2f}
+Recent Change (10 periods): {change_recent:+.2f}%
+5-Day Change: {change_5d:+.2f}%
+5-Day High: ${high_5d:.2f}
+5-Day Low: ${low_5d:.2f}
+{tech_section}
+
+=== YOUR POSITION ===
+Current holding: {position_str}
 {news_section}
 
-Current position: {self.positions.get(data.pair, 0)} units
+Make your trading decision as JSON."""
 
-Provide your trading decision as JSON."""
-
-    def _parse_response(self, response: str, pair: str) -> Decision:
+    def _parse_response(self, response: str, market_data: MarketData) -> Decision:
         try:
-            # Try to extract JSON from response
+            # Extract JSON from response
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
@@ -101,19 +125,27 @@ Provide your trading decision as JSON."""
             confidence = float(data.get("confidence", 0.5))
             reasoning = data.get("reasoning", "No reasoning provided")
             
+            # Calculate quantity
+            quantity = None
+            if action == Action.BUY:
+                quantity = int(config.POSITION_SIZE_USD / market_data.current_price)
+            elif action == Action.SELL:
+                quantity = self.get_position(market_data.symbol)
+            
             return Decision(
                 action=action,
-                pair=pair,
+                symbol=market_data.symbol,
                 confidence=confidence,
                 reasoning=reasoning,
-                strategy_name=self.name
+                strategy_name=self.name,
+                quantity=quantity
             )
         
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"Failed to parse LLM response: {response}")
+            print(f"Failed to parse LLM response: {response[:200]}")
             return Decision(
                 action=Action.HOLD,
-                pair=pair,
+                symbol=market_data.symbol,
                 confidence=0.0,
                 reasoning=f"Failed to parse response: {e}",
                 strategy_name=self.name

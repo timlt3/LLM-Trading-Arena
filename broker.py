@@ -1,4 +1,4 @@
-from ib_insync import IB, Forex, MarketOrder
+from ib_insync import IB, Stock, MarketOrder
 from typing import Optional
 import time
 
@@ -7,7 +7,7 @@ import config
 
 
 class Broker:
-    """IBKR paper trading broker connection."""
+    """IBKR paper trading broker connection for equities."""
     
     def __init__(self):
         self.ib = IB()
@@ -22,10 +22,10 @@ class Broker:
                 clientId=config.IBKR_CLIENT_ID
             )
             self.connected = True
-            print(f"Connected to IBKR on port {config.IBKR_PORT}")
+            print(f"✅ Connected to IBKR on port {config.IBKR_PORT}")
             return True
         except Exception as e:
-            print(f"Failed to connect to IBKR: {e}")
+            print(f"❌ Failed to connect to IBKR: {e}")
             self.connected = False
             return False
     
@@ -38,34 +38,45 @@ class Broker:
     
     def execute_trade(
         self,
-        pair: str,
+        symbol: str,
         action: Action,
-        size: int,
+        quantity: int,
         strategy_name: str
     ) -> Optional[dict]:
-        """Execute a trade on IBKR."""
+        """Execute a stock trade on IBKR."""
         
         if action == Action.HOLD:
             return None
         
         if not self.connected:
-            print("Not connected to IBKR")
+            print(f"    [DRY RUN] Would {action.value} {quantity} {symbol}")
+            # Return simulated fill for dry run mode
+            return {
+                "symbol": symbol,
+                "action": action.value,
+                "quantity": quantity,
+                "price": 0.0,  # Will be filled by tracker
+                "strategy": strategy_name
+            }
+        
+        # Create stock contract (US stocks on SMART routing)
+        contract = Stock(symbol, "SMART", "USD")
+        
+        # Qualify the contract to get full details
+        try:
+            self.ib.qualifyContracts(contract)
+        except Exception as e:
+            print(f"    Failed to qualify contract for {symbol}: {e}")
             return None
-        
-        # Convert pair to IBKR format (EUR/USD -> EURUSD)
-        symbol = pair.replace("/", "")
-        
-        # Create forex contract
-        contract = Forex(symbol)
         
         # Determine order direction
         order_action = "BUY" if action == Action.BUY else "SELL"
         
-        # Create market order with strategy tag in reference
+        # Create market order with strategy tag
         order = MarketOrder(
             action=order_action,
-            totalQuantity=size,
-            orderRef=f"LLM-ARENA-{strategy_name}"  # Tag for tracking
+            totalQuantity=quantity,
+            orderRef=f"LLM-ARENA-{strategy_name}"
         )
         
         try:
@@ -80,36 +91,35 @@ class Broker:
             
             if trade.orderStatus.status == "Filled":
                 fill_price = trade.orderStatus.avgFillPrice
-                print(f"[{strategy_name}] {order_action} {size} {pair} @ {fill_price}")
+                print(f"    ✅ [{strategy_name}] {order_action} {quantity} {symbol} @ ${fill_price:.2f}")
                 return {
-                    "pair": pair,
+                    "symbol": symbol,
                     "action": order_action,
-                    "size": size,
+                    "quantity": quantity,
                     "price": fill_price,
                     "strategy": strategy_name,
                     "order_id": trade.order.orderId
                 }
             else:
-                print(f"Order not filled: {trade.orderStatus.status}")
+                print(f"    ⚠️ Order not filled: {trade.orderStatus.status}")
                 return None
                 
         except Exception as e:
-            print(f"Trade execution error: {e}")
+            print(f"    ❌ Trade execution error: {e}")
             return None
     
-    def get_position(self, pair: str) -> float:
-        """Get current position for a pair."""
+    def get_position(self, symbol: str) -> int:
+        """Get current position for a symbol."""
         if not self.connected:
-            return 0.0
+            return 0
         
-        symbol = pair.replace("/", "")
         positions = self.ib.positions()
         
         for pos in positions:
-            if pos.contract.symbol == symbol[:3]:  # Base currency
-                return pos.position
+            if pos.contract.symbol == symbol:
+                return int(pos.position)
         
-        return 0.0
+        return 0
     
     def get_account_value(self) -> float:
         """Get total account value."""

@@ -12,21 +12,27 @@ class Action(Enum):
 
 @dataclass
 class MarketData:
-    pair: str
+    symbol: str
     current_price: float
-    prices_1h: list[float]  # Last hour of prices (1-min intervals)
-    prices_24h: list[float]  # Last 24h of prices (15-min intervals)
+    prices_1d: list[float]  # Today's prices (1-min or 5-min intervals)
+    prices_5d: list[float]  # Last 5 days of prices (15-min intervals)
     news_headlines: list[str]  # Recent news headlines
     timestamp: str
+    
+    # Technical indicators (pre-calculated)
+    rsi_14: Optional[float] = None
+    sma_10: Optional[float] = None
+    sma_50: Optional[float] = None
 
 
 @dataclass
 class Decision:
     action: Action
-    pair: str
+    symbol: str
     confidence: float  # 0-1
     reasoning: str
     strategy_name: str
+    quantity: Optional[int] = None  # Number of shares
 
 
 class BaseStrategy(ABC):
@@ -34,8 +40,8 @@ class BaseStrategy(ABC):
     
     def __init__(self, name: str):
         self.name = name
-        self.positions: dict[str, float] = {}  # pair -> position size (+ long, - short)
-        self.pnl: float = 0.0
+        self.positions: dict[str, int] = {}  # symbol -> shares (+ long, - short)
+        self.cash: float = 100000.0  # Starting cash for tracking
         self.trades: list[dict] = []
     
     @abstractmethod
@@ -43,12 +49,6 @@ class BaseStrategy(ABC):
         """Make a trading decision based on market data."""
         pass
     
-    def record_trade(self, pair: str, action: Action, price: float, size: float):
-        """Record a trade for P&L tracking."""
-        self.trades.append({
-            "pair": pair,
-            "action": action.value,
-            "price": price,
-            "size": size,
-            "timestamp": None  # Will be set by tracker
-        })
+    def get_position(self, symbol: str) -> int:
+        """Get current position for a symbol."""
+        return self.positions.get(symbol, 0)
